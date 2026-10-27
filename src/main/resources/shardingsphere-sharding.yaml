@@ -1,0 +1,78 @@
+# 学习场景：垂直分片——垂直分库（按业务表拆分数据库）。
+# t_user 固定在用户库 db_user，t_order 固定在订单库 db_order；每张表的数据保持完整。
+# 本文件不做垂直分表、水平分片或读写分离；在 application-dev.yml 的 datasource.url 中选择加载。
+# 分片学习专用配置，使用 ShardingSphere-JDBC 5.5.2 独立 YAML 格式。
+# 垂直分库：按业务表划分数据库，用户表与订单表分别固定到各自的数据源。
+# ShardingSphere 内部逻辑数据库名称，不是真实 MySQL 库名。
+databaseName: sharding_demo
+
+# ShardingSphere 运行模式。
+mode:
+  # 单机模式，无需外部配置中心。
+  type: Standalone
+  # ShardingSphere 配置与元数据仓库，不存业务数据。
+  repository:
+    # 通过 JDBC 访问元数据仓库。
+    type: JDBC
+    # 元数据仓库参数。
+    props:
+      # 使用内嵌 H2。
+      provider: H2
+      # 使用独立的内存配置库；最后连接关闭后释放，保留大小写并兼容 MySQL 语法。
+      jdbc_url: jdbc:h2:mem:sharding_config;DB_CLOSE_DELAY=0;DATABASE_TO_UPPER=false;MODE=MYSQL
+      # H2 元数据仓库账号。
+      username: sa
+      # H2 元数据仓库空密码。
+      password: ''
+
+# 两个真实数据源；端口、库名沿用截图，仅 IP 替换为你的 NAS 地址。
+dataSources:
+  # 用户库的数据源别名，后续路由规则通过该名称引用。
+  server-user:
+    # 使用 HikariCP 连接池。
+    dataSourceClassName: com.zaxxer.hikari.HikariDataSource
+    # MySQL Connector/J 驱动。
+    driverClassName: com.mysql.cj.jdbc.Driver
+    # NAS 映射端口 3301，真实数据库 db_user，JDBC 时区 Asia/Shanghai。
+    jdbcUrl: jdbc:mysql://127.0.0.1:3301/db_user?serverTimezone=Asia/Shanghai
+    # 用户库连接账号。
+    username: root
+    # 用户库连接密码。
+    password: '123456'
+    # 用户库连接池的最大连接数。
+    maximumPoolSize: 5
+  # 订单库的数据源别名。
+  server-order:
+    # 使用 HikariCP 连接池。
+    dataSourceClassName: com.zaxxer.hikari.HikariDataSource
+    # MySQL Connector/J 驱动。
+    driverClassName: com.mysql.cj.jdbc.Driver
+    # NAS 映射端口 3302，真实数据库 db_order，JDBC 时区 Asia/Shanghai。
+    jdbcUrl: jdbc:mysql://127.0.0.1:3302/db_order?serverTimezone=Asia/Shanghai
+    # 订单库连接账号。
+    username: root
+    # 订单库连接密码。
+    password: '123456'
+    # 订单库连接池的最大连接数。
+    maximumPoolSize: 5
+
+# 数据路由规则集合。
+rules:
+  # 使用当前版本的分片规则 YAML 标签。
+  - !SHARDING
+    # 逻辑表到实际数据节点的映射集合。
+    tables:
+      # User 实体使用的逻辑表。
+      t_user:
+        # 节点格式为 数据源别名.物理表名，固定访问 server-user 的 db_user.t_user。
+        actualDataNodes: server-user.t_user
+      # Order 实体使用的逻辑表。
+      t_order:
+        # 固定访问 server-order 的 db_order.t_order。
+        actualDataNodes: server-order.t_order
+    # 每张逻辑表只有一个实际节点，不需要分片键和取模算法。
+
+# ShardingSphere 全局属性。
+props:
+  # 打印逻辑 SQL、实际 SQL、数据源名称和参数。
+  sql-show: true

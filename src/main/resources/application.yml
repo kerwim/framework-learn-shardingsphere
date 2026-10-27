@@ -1,0 +1,10 @@
+# Spring Boot 的基础配置入口。
+spring:
+  # 应用身份信息。
+  application:
+    # 应用名称，可显示在日志中。
+    name: framework-learn-shardingsphere
+  # Spring 环境配置。
+  profiles:
+    # 激活开发环境，同时加载 application-dev.yml。
+    active: dev

@@ -1,0 +1,21 @@
+# 开发环境下的 Spring Boot 配置。
+spring:
+  # Spring Boot 使用的逻辑数据源，底层一主二从由 ShardingSphere 管理。
+  datasource:
+    # 使用 ShardingSphere JDBC 驱动，而不是直接使用 MySQL 驱动。
+    driver-class-name: org.apache.shardingsphere.driver.ShardingSphereDriver
+    # 从 classpath 加载独立的 ShardingSphere YAML，路径相对于 resources。
+    url: jdbc:shardingsphere:classpath:shardingsphere-horizontal.yaml
+  # Spring Boot SQL 脚本初始化配置。
+  sql:
+    # 控制 schema.sql、data.sql 等初始化脚本的自动执行。
+    init:
+      # 禁用自动执行初始化脚本，避免启动时意外修改数据库。
+      mode: never
+
+# 日志配置。
+logging:
+  # 按日志记录器名称配置输出级别。
+  level:
+    # SQL 日志使用 INFO 级别；还需在独立 YAML 中开启 sql-show。
+    ShardingSphere-SQL: INFO

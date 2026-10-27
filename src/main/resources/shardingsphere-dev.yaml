@@ -1,0 +1,124 @@
+# 学习场景：读写分离（一主二从）。
+# 写操作走 master，普通非事务读按负载均衡算法走 slave1/slave2，事务内读走 master。
+# 本文件不做分库分表；在 application-dev.yml 的 datasource.url 中选择加载。
+# ShardingSphere-JDBC 5.5.2 独立 YAML，不使用旧版 spring.shardingsphere.*。
+# ShardingSphere 内部逻辑数据库名称，与真实 MySQL 库名 db_user 不同。
+databaseName: user_demo
+
+# 运行模式配置；旧教程的 Memory 类型不适用于当前版本。
+mode:
+  # 单机模式，无需 ZooKeeper 等外部配置中心。
+  type: Standalone
+  # 保存 ShardingSphere 配置和元数据的仓库，不保存业务表数据。
+  repository:
+    # 使用 JDBC 类型的元数据仓库。
+    type: JDBC
+    # JDBC 元数据仓库的参数。
+    props:
+      # 元数据仓库使用内嵌 H2，不是下面三个 MySQL 业务数据源。
+      provider: H2
+      # 内存库 config；最后连接关闭即释放；保留标识符大小写；启用 MySQL 兼容模式。
+      jdbc_url: jdbc:h2:mem:config;DB_CLOSE_DELAY=0;DATABASE_TO_UPPER=false;MODE=MYSQL
+      # H2 元数据仓库账号，与 MySQL root 账号无关。
+      username: sa
+      # H2 元数据仓库使用空密码。
+      password: ''
+
+# 三个真实业务数据源；主从复制及 server-id 需在 MySQL 服务端配置。
+dataSources:
+  # 主库数据源别名，供读写规则引用。
+  master:
+    # 使用 HikariCP 管理主库连接池。
+    dataSourceClassName: com.zaxxer.hikari.HikariDataSource
+    # 主库底层使用 MySQL Connector/J 驱动。
+    driverClassName: com.mysql.cj.jdbc.Driver
+    # NAS 宿主机映射端口 3307，业务库 db_user，JDBC 时区为 Asia/Shanghai。
+    jdbcUrl: jdbc:mysql://127.0.0.1:3307/db_user?serverTimezone=Asia/Shanghai
+    # 主库连接账号。
+    username: root
+    # 主库连接密码，字符串格式。
+    password: '123456'
+    # 该主库连接池最多保留 5 个连接。
+    maximumPoolSize: 5
+  # 第一个从库数据源别名。
+  slave1:
+    # 使用 HikariCP 管理第一个从库连接池。
+    dataSourceClassName: com.zaxxer.hikari.HikariDataSource
+    # 从库底层使用 MySQL Connector/J 驱动。
+    driverClassName: com.mysql.cj.jdbc.Driver
+    # NAS 宿主机映射端口 3308，连接从库同步得到的 db_user。
+    jdbcUrl: jdbc:mysql://127.0.0.1:3308/db_user?serverTimezone=Asia/Shanghai
+    # 第一个从库连接账号。
+    username: root
+    # 第一个从库连接密码。
+    password: '123456'
+    # 第一个从库连接池的最大连接数。
+    maximumPoolSize: 5
+  # 第二个从库数据源别名。
+  slave2:
+    # 使用 HikariCP 管理第二个从库连接池。
+    dataSourceClassName: com.zaxxer.hikari.HikariDataSource
+    # 从库底层使用 MySQL Connector/J 驱动。
+    driverClassName: com.mysql.cj.jdbc.Driver
+    # NAS 宿主机映射端口 3309，连接从库同步得到的 db_user。
+    jdbcUrl: jdbc:mysql://127.0.0.1:3309/db_user?serverTimezone=Asia/Shanghai
+    # 第二个从库连接账号。
+    username: root
+    # 第二个从库连接密码。
+    password: '123456'
+    # 第二个从库连接池的最大连接数。
+    maximumPoolSize: 5
+
+# ShardingSphere 规则列表，使用 YAML 标签区分规则类型。
+rules:
+  # 读写分离规则；固定主从关系直接声明，不再使用旧版 type: Static。
+  - !READWRITE_SPLITTING
+    # 逻辑读写数据源组集合。
+    dataSourceGroups:
+      # 一主二从组合的逻辑组名，不是另一个真实 MySQL 数据库。
+      myds:
+        # INSERT、UPDATE、DELETE 等写操作路由到 master。
+        writeDataSourceName: master
+        # 普通非事务读操作可选的从库列表。
+        readDataSourceNames:
+          # 第一个可选读数据源，对应上方 slave1。
+          - slave1
+          # 第二个可选读数据源，对应上方 slave2。
+          - slave2
+        # 事务内查询走主库；其他可选策略为 FIXED、DYNAMIC，不是旧版拓扑类型。
+        transactionalReadQueryStrategy: PRIMARY
+        # 切换只改这一行：alg_round 轮询、alg_random 随机、alg_weight 权重；重启生效。
+        loadBalancerName: alg_random
+
+    # 可供逻辑组引用的负载均衡算法；配置多个，但由 loadBalancerName 选择其中一个。
+    loadBalancers:
+      # 轮询算法的自定义名称。
+      alg_round:
+        # 依次选择两个从库，不需要额外 props。
+        type: ROUND_ROBIN
+      # 随机算法的自定义名称。
+      alg_random:
+        # 随机选择从库，可能连续多次选中同一个从库。
+        type: RANDOM
+      # 权重算法的自定义名称。
+      alg_weight:
+        # 按权重概率选择从库，不保证每三次恰好按 1:2 分配。
+        type: WEIGHT
+        # 权重参数的键必须与读数据源别名一致。
+        props:
+          # slave1 权重为 1，长期访问比例约为三分之一。
+          slave1: '1'
+          # slave2 权重为 2，长期访问比例约为三分之二。
+          slave2: '2'
+
+  # 显式加载单表元数据；这里是读写分离，没有对 t_user 分库分表。
+  - !SINGLE
+    # 需要加载的单表节点列表。
+    tables:
+      # 从逻辑读写组 myds 加载 t_user，其读写遵循上面的路由规则。
+      - myds.t_user
+
+# ShardingSphere 全局属性，与 Spring Boot 日志级别配置配合使用。
+props:
+  # 输出 Logic SQL、Actual SQL、真实数据源别名和参数。
+  sql-show: true

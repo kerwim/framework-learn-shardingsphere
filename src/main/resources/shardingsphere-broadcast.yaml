@@ -1,0 +1,207 @@
+# 学习场景：广播表 t_dict；保留订单、明细的水平分片和绑定表配置。
+# t_dict 在 server-user、server-order0、server-order1 均需提前建好，保存相同字典数据。
+# 学习场景：订单与订单明细水平分片；每张逻辑表均为两库四表。
+# 独立保留原水平分片 Demo；订单与明细配置为同一组绑定表。
+# 启用时将 application-dev.yml 的 datasource.url 指向本文件。
+# 逻辑表 t_order：业务代码始终使用该表名。
+# server-user（3301/db_user）独立保存 t_user。
+# server-order0（3310/db_order）包含 t_order0、t_order1。
+# server-order1（3311/db_order）包含 t_order0、t_order1。
+# 四张物理表结构相同，保存不同的数据；这里不是主从复制。
+# 当前学习步骤：按 user_id 分库、按 order_no 配置分表策略。
+# 分库和分表均使用 INLINE，兼容 5.5.2 的手动实际节点配置。
+# ShardingSphere 内部逻辑数据库名称，不是真实 MySQL 库名。
+databaseName: broadcast_demo
+
+# ShardingSphere 运行模式。
+mode:
+  # 单机模式，无需外部配置中心。
+  type: Standalone
+  # ShardingSphere 配置与元数据仓库，不存业务数据。
+  repository:
+    # 通过 JDBC 访问元数据仓库。
+    type: JDBC
+    # 元数据仓库参数。
+    props:
+      # 使用内嵌 H2。
+      provider: H2
+      # 使用独立的内存配置库；最后连接关闭后释放，保留大小写并兼容 MySQL 语法。
+      jdbc_url: jdbc:h2:mem:broadcast_config;DB_CLOSE_DELAY=0;DATABASE_TO_UPPER=false;MODE=MYSQL
+      # H2 元数据仓库账号。
+      username: sa
+      # H2 元数据仓库空密码。
+      password: ''
+
+# 一个用户数据源和两个订单数据源，均使用你的 NAS 地址。
+dataSources:
+  # 用户库数据源别名，与逻辑表 t_user 的实际节点对应。
+  server-user:
+    # 使用 HikariCP 连接池。
+    dataSourceClassName: com.zaxxer.hikari.HikariDataSource
+    # MySQL Connector/J 驱动。
+    driverClassName: com.mysql.cj.jdbc.Driver
+    # 用户实例：宿主机端口 3301，真实库 db_user。
+    jdbcUrl: jdbc:mysql://127.0.0.1:3301/db_user?serverTimezone=Asia/Shanghai
+    # 用户库连接账号。
+    username: root
+    # 用户库连接密码。
+    password: '123456'
+    # 用户库连接池的最大连接数。
+    maximumPoolSize: 5
+  # 第一个订单分片库的数据源别名。
+  server-order0:
+    # 使用 HikariCP 连接池。
+    dataSourceClassName: com.zaxxer.hikari.HikariDataSource
+    # MySQL Connector/J 驱动。
+    driverClassName: com.mysql.cj.jdbc.Driver
+    # 第一个订单实例：宿主机端口 3310，真实库 db_order。
+    jdbcUrl: jdbc:mysql://127.0.0.1:3310/db_order?serverTimezone=Asia/Shanghai
+    # 第一个订单库连接账号。
+    username: root
+    # 第一个订单库连接密码。
+    password: '123456'
+    # 第一个订单库连接池的最大连接数。
+    maximumPoolSize: 5
+  # 第二个订单分片库的数据源别名。
+  server-order1:
+    # 使用 HikariCP 连接池。
+    dataSourceClassName: com.zaxxer.hikari.HikariDataSource
+    # MySQL Connector/J 驱动。
+    driverClassName: com.mysql.cj.jdbc.Driver
+    # 第二个订单实例：宿主机端口 3311，真实库 db_order。
+    jdbcUrl: jdbc:mysql://127.0.0.1:3311/db_order?serverTimezone=Asia/Shanghai
+    # 订单库连接账号。
+    username: root
+    # 订单库连接密码。
+    password: '123456'
+    # 订单库连接池的最大连接数。
+    maximumPoolSize: 5
+
+# 数据路由规则集合。
+rules:
+  # 当前版本的分片规则配置标签。
+  - !SHARDING
+    # 逻辑表与实际数据节点的对应关系。
+    tables:
+      # 用户逻辑表只有一个实际节点，固定访问用户库。
+      t_user:
+        # 数据源别名.物理表名，对应 3301/db_user 的 t_user。
+        actualDataNodes: server-user.t_user
+      # 订单逻辑表按用户 ID 分库，并按订单号配置分表策略。
+      t_order:
+        # 展开为两个库各两张表，共四个实际节点。
+        actualDataNodes: server-order$->{0..1}.t_order$->{0..1}
+        # 决定订单进入哪个数据库的策略。
+        databaseStrategy:
+          # 标准策略，使用一个分片键。
+          standard:
+            # 对应 Order.userId 的数据库字段，不是订单主键 id。
+            shardingColumn: user_id
+            # 引用下方 INLINE 分库算法。
+            shardingAlgorithmName: alg_inline
+        # 决定订单进入目标库中哪张物理表的策略。
+        tableStrategy:
+          # 标准策略，使用一个分片键。
+          standard:
+            # 对应 Order.orderNo 的数据库字段。
+            shardingColumn: order_no
+            # 引用 INLINE 哈希分表算法，支持 ATGUIGU001 等字符串订单号。
+            shardingAlgorithmName: alg_inline_order_no
+        # 订单主键生成策略；与分库、分表策略独立。
+        keyGenerateStrategy:
+          # 由 ShardingSphere 自动生成的数据库列，插入时不手动设置 id。
+          column: id
+          # 引用下方声明的雪花主键生成器。
+          keyGeneratorName: alg_snowflake
+      # 订单明细逻辑表，与订单按同一用户和订单号路由。
+      t_order_item:
+        # 两个订单库各两张明细表，共四个实际节点。
+        actualDataNodes: server-order$->{0..1}.t_order_item$->{0..1}
+        # 明细分库策略，与订单表共用相同算法。
+        databaseStrategy:
+          # 使用单一分片键的标准策略。
+          standard:
+            # 根据用户 ID 选择订单数据库。
+            shardingColumn: user_id
+            # 奇数用户进入 order1，偶数用户进入 order0。
+            shardingAlgorithmName: alg_inline
+        # 明细分表策略，哈希计算与订单表一致，物理表名前缀不同。
+        tableStrategy:
+          # 使用单一分片键的标准策略。
+          standard:
+            # 同一订单的明细必须填写与订单一致的订单号。
+            shardingColumn: order_no
+            # 引用明细专用的表名表达式。
+            shardingAlgorithmName: alg_inline_item_order_no
+        # 明细主键独立生成，不需要与订单主键相同。
+        keyGenerateStrategy:
+          # 生成明细表的 id 列。
+          column: id
+          # 与订单共用已有雪花生成器。
+          keyGeneratorName: alg_snowflake
+    # 绑定表组：两表按相同 user_id 分库、相同 order_no 哈希规则分表。
+    bindingTables:
+      # 同组表用逗号分隔；关联查询应包含相应分片键条件，才能充分利用同节点路由。
+      - t_order,t_order_item
+    # 分布式主键生成器集合，与 shardingAlgorithms 平级。
+    keyGenerators:
+      # 雪花主键生成器的自定义名称。
+      alg_snowflake:
+        # 使用 ShardingSphere 内置雪花算法；不再由 MyBatis-Plus ASSIGN_ID 生成。
+        type: SNOWFLAKE
+    # 供分片策略引用的算法集合。
+    shardingAlgorithms:
+      # 明细分表算法：使用与订单相同的哈希取模方式，仅表名前缀不同。
+      alg_inline_item_order_no:
+        # 兼容手动 tables 配置的行表达式算法。
+        type: INLINE
+        # 算法参数。
+        props:
+          # 相同订单号得到相同后缀，让订单和明细位于同库、同编号表。
+          algorithm-expression: t_order_item$->{Math.floorMod(order_no.hashCode(), 2)}
+      # 字符串订单号的哈希分表算法。
+      alg_inline_order_no:
+        # 手动 tables 配置使用 INLINE，而非自动表专用的 HASH_MOD。
+        type: INLINE
+        # 算法参数。
+        props:
+          # Java 字符串 hashCode 非负取模，结果为 t_order0 或 t_order1。
+          # 此算法与内置 HASH_MOD 不保证产生相同落点。
+          algorithm-expression: t_order$->{Math.floorMod(order_no.hashCode(), 2)}
+      # 哈希取模算法的自定义名称，按教学先声明，尚未被当前策略引用。
+      alg_hash_mod:
+        # 支持字符串分片值；在 5.5.2 中属于自动分片算法，不能直接用于手动 tables 策略。
+        type: HASH_MOD
+        # 哈希取模算法参数。
+        props:
+          # 哈希后分配到两个分片。
+          sharding-count: '2'
+      # 内置取模算法的自定义名称。
+      alg_mod:
+        # 内置自动分片算法；5.5.2 不允许在手动 tables 策略中引用，暂按教学保留。
+        type: MOD
+        # MOD 算法参数。
+        props:
+          # 分片数量为 2；仅保留教学定义，当前策略不引用。
+          sharding-count: '2'
+      # 分库算法名称，必须与策略中的名称一致。
+      alg_inline:
+        # 使用行表达式算法。
+        type: INLINE
+        # 算法参数。
+        props:
+          # 偶数用户走 server-order0，奇数用户走 server-order1。
+          algorithm-expression: server-order$->{user_id % 2}
+
+  # 5.5.2 使用独立广播表规则，和 !SHARDING 平级。
+  - !BROADCAST
+    # 广播表列表，自动覆盖本文件 dataSources 中的三个数据源。
+    tables:
+      # 对应 server-order0.t_dict、server-order1.t_dict、server-user.t_dict。
+      # 无需在 !SHARDING.tables 下重复配置 actualDataNodes。
+      - t_dict
+
+# ShardingSphere 全局属性。
+props:
+  # 打印逻辑 SQL、实际 SQL、数据源名称和参数。
+  sql-show: true
